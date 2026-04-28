@@ -16,16 +16,23 @@ OUTPUT_FILE = "resultados\\NWJSSP_OADG_NEH(MS+ELS+PROBABILISTICO).xlsx"
 # Parametros
 # ─────────────────────────────────────────────
 ALPHA = 0.20
+N_SOL = 3
 N_ITER = 10
+N_CANDIDATES = 5
 TIME_LIMIT_TOTAL = 3600
 TIME_LIMIT_PER_BLOCK = 0.01
+
+# Probabilidad de aceptar una solucion peor durante el ELS (0.0 = nunca, 1.0 = siempre)
+# Solo aplica en la fase ELS, NO en la construccion inicial ni en la busqueda local pura.
+PROB_ACCEPT_WORSE = 0.10
+
 random.seed(42)
 
 INSTANCES = [
-    "ft06.txt",           "ft06r.txt",
-    "ft10.txt",           "ft10r.txt",
-    "ft20.txt",           "ft20r.txt",
-    #"tai_j10_m10_1.txt",    "tai_j10_m10_1r.txt",
+    #"ft06.txt",           "ft06r.txt",
+    #"ft10.txt",           "ft10r.txt",
+    #"ft20.txt",           "ft20r.txt",
+    "tai_j10_m10_1.txt",    "tai_j10_m10_1r.txt",
     #"tai_j100_m10_1.txt",   "tai_j100_m10_1r.txt",
     #"tai_j100_m100_1.txt",  "tai_j100_m100_1r.txt",
     #"tai_j1000_m10_1.txt",  "tai_j1000_m10_1r.txt",
@@ -95,7 +102,7 @@ def precompute_all_offsets(jobs: list):
 
 
 # ─────────────────────────────────────────────
-# Scheduling aproximado (construccion GRASP)
+# Scheduling aproximado (construccion meta)
 # ─────────────────────────────────────────────
 def find_start_approximate(job: Job, machine_available: list, offsets: list):
     """Calcula el menor tiempo de inicio factible ignorando solapamientos entre
@@ -184,15 +191,21 @@ def evaluate_sequence_precise(sequence: list, jobs: list, m: int, offsets_list: 
 
 
 # ─────────────────────────────────────────────
-# Construccion de solucion GRASP
+# Construccion de solucion meta
 # ─────────────────────────────────────────────
 def build_rcl(pending: list, jobs: list, alpha: float):
     """Construye la Lista Restringida de Candidatos basada en valor.
-    alpha=0 es greedy puro, alpha=1 es aleatorio puro."""
+    alpha=0 es greedy puro (solo el mejor), alpha=1 es aleatorio puro (todos).
+
+    BUG CORREGIDO: el threshold original usaba (w_max - alpha*(w_max-w_min)),
+    que excluia a los jobs mas ligeros siendo que NEH los quiere primero.
+    Ahora se incluyen todos los jobs con peso >= w_min + (1-alpha)*(w_max-w_min),
+    lo que con alpha=0 deja solo el mejor y con alpha=1 incluye todos.
+    """
     weights = {j: jobs[j].release + sum(op.p for op in jobs[j].operations) for j in pending}
     w_max = max(weights.values())
     w_min = min(weights.values())
-    threshold = w_max - alpha * (w_max - w_min)
+    threshold = w_min + (1.0 - alpha) * (w_max - w_min)
     return [j for j in pending if weights[j] >= threshold]
 
 
@@ -215,8 +228,8 @@ def find_best_insertion_position(sequence: list, job_to_insert: int, jobs: list,
     return best_pos, best_value
 
 
-def build_grasp_solution(jobs: list, m: int, alpha: float, block_size: int):
-    """Una iteracion de construccion GRASP integrada en el marco NEH.
+def build_meta_solution(jobs: list, m: int, alpha: float, block_size: int):
+    """Una iteracion de construccion meta integrada en el marco NEH.
     La iteracion con alpha=0 equivale al NEH greedy clasico."""
     pending = list(range(len(jobs)))
     sequence = []
@@ -234,89 +247,206 @@ def build_grasp_solution(jobs: list, m: int, alpha: float, block_size: int):
 # ─────────────────────────────────────────────
 def insertion_forward_neighbors(sequence: list):
     """Mueve cada job hacia adelante en la secuencia (i -> j, j > i)."""
-    neighbors = []
     n = len(sequence)
     for i in range(n):
         for j in range(i + 1, n):
             neighbor = sequence[:]
             job = neighbor.pop(i)
             neighbor.insert(j, job)
-            neighbors.append(neighbor)
-    return neighbors
+            yield neighbor
 
 
 def insertion_backward_neighbors(sequence: list):
     """Mueve cada job hacia atras en la secuencia (i -> j, j < i)."""
-    neighbors = []
     n = len(sequence)
     for i in range(n):
         for j in range(i):
             neighbor = sequence[:]
-            job      = neighbor.pop(i)
+            job = neighbor.pop(i)
             neighbor.insert(j, job)
-            neighbors.append(neighbor)
-    return neighbors
+            yield neighbor
 
 
 def swap_neighbors(sequence: list):
     """Intercambia cada par de jobs (i, j) con i < j."""
-    neighbors = []
     n = len(sequence)
     for i in range(n):
         for j in range(i + 1, n):
             neighbor = sequence[:]
             neighbor[i], neighbor[j] = neighbor[j], neighbor[i]
-            neighbors.append(neighbor)
-    return neighbors
+            yield neighbor
 
 
-NEIGHBORHOOD_GENERATOR = insertion_forward_neighbors
+NEIGHBORHOOD_GENERATOR = insertion_backward_neighbors
 
 
 # ─────────────────────────────────────────────
 # Busqueda local (First Improvement)
 # ─────────────────────────────────────────────
-def first_improvement_local_search(sequence: list, jobs: list, m: int, offsets_list: list, start_time: float, current_value: int):
+def first_improvement_local_search(
+    sequence: list,
+    jobs: list,
+    m: int,
+    offsets_list: list,
+    start_time: float,
+    current_value: int,
+    accept_worse: bool = False,
+    prob_accept_worse: float = PROB_ACCEPT_WORSE,
+):
+    """Busqueda local First Improvement.
+
+    accept_worse=False (default): comportamiento clasico, solo acepta mejoras.
+    accept_worse=True           : acepta con probabilidad `prob_accept_worse`
+                                  una solucion vecina que NO mejore la actual.
+                                  Solo se usa durante el ELS para escapar de
+                                  optimos locales sin necesidad de recocido simulado.
+    """
     best_sequence = list(sequence)
     improved = True
     while improved and (time.time() - start_time < TIME_LIMIT_TOTAL):
-        improved  = False
-        neighbors = NEIGHBORHOOD_GENERATOR(best_sequence)
-        for neighbor in neighbors:
+        improved = False
+        for neighbor in NEIGHBORHOOD_GENERATOR(best_sequence):
             if time.time() - start_time >= TIME_LIMIT_TOTAL:
                 break
             value = evaluate_sequence_precise(neighbor, jobs, m, offsets_list)
             if value < current_value:
+                # Siempre aceptar mejora
                 best_sequence = neighbor
                 current_value = value
                 improved = True
                 break
+            elif accept_worse and value > current_value:
+                # Aceptar solucion peor con probabilidad baja
+                if random.random() < prob_accept_worse:
+                    best_sequence = neighbor
+                    current_value = value
+                    improved = True  # forzar otra ronda desde este nuevo punto
+                    break
     return best_sequence, current_value
 
 
 # ─────────────────────────────────────────────
-# GRASP
+# Perturbacion
 # ─────────────────────────────────────────────
-def grasp(jobs: list, m: int, offsets_list: list, start_time: float):
-    """Ejecuta N_ITER construcciones GRASP seguidas de busqueda local.
-    La iteracion 0 usa alpha=0 (NEH greedy puro) como punto de referencia."""
+def perturbation(sequence: list, jobs: list, m: int, offsets_list: list):
+    """Realiza una perturbacion aleatoria de acuerdo al movimiento del vecindario.
+
+    BUG CORREGIDO: el 'continue' cuando i==j podia dejar perturbaciones sin
+    aplicar. Ahora se reintenta hasta obtener un par (i, j) valido.
+    """
+    new_seq = sequence[:]
+    n = len(new_seq)
+    npert = 3
+
+    for _ in range(npert):
+        # Reintentar hasta obtener indices distintos y validos para el movimiento
+        max_attempts = 20
+        for _ in range(max_attempts):
+            i = random.randint(0, n - 1)
+            j = random.randint(0, n - 1)
+
+            if i == j:
+                continue
+
+            if NEIGHBORHOOD_GENERATOR == insertion_forward_neighbors:
+                if i < j:
+                    job = new_seq.pop(i)
+                    new_seq.insert(j, job)
+                    break
+            elif NEIGHBORHOOD_GENERATOR == insertion_backward_neighbors:
+                if i > j:
+                    job = new_seq.pop(i)
+                    new_seq.insert(j, job)
+                    break
+            else:  # swap
+                new_seq[i], new_seq[j] = new_seq[j], new_seq[i]
+                break
+
+    new_value = evaluate_sequence_precise(new_seq, jobs, m, offsets_list)
+    return new_seq, new_value
+
+
+# ─────────────────────────────────────────────
+# meta: MultiStart + ELS + Probabilistico Simple
+# ─────────────────────────────────────────────
+def meta(jobs: list, m: int, offsets_list: list, start_time: float):
+    """
+    MultiStart + ELS + Probabilistico Simple.
+
+    Estructura:
+      Para cada solucion inicial (MultiStart):
+        1. Construccion meta (GRASP-NEH)
+        2. Busqueda local DETERMINISTA (accept_worse=False)  <- sin aceptar peores
+        3. ELS sobre la mejor local:
+             - Perturbacion
+             - Busqueda local PROBABILISTICA (accept_worse=True) <- acepta peores con prob baja
+             - Criterio de aceptacion de la base del ELS: solo si mejora
+             - Actualizacion del optimo global: solo si mejora
+    """
     n = len(jobs)
     block_size = max(10, int(math.sqrt(n)))
+
     best_sequence = None
     best_value = float("inf")
 
-    for i in range(N_ITER):
+    alpha = ALPHA
+    for h in range(N_SOL):
         if time.time() - start_time >= TIME_LIMIT_TOTAL:
             break
-        alpha = 0.0 if i == 0 else ALPHA
-        sequence = build_grasp_solution(jobs, m, alpha, block_size)
-        sequence, value = first_improvement_local_search(
-            sequence, jobs, m, offsets_list, start_time,
-            evaluate_sequence_precise(sequence, jobs, m, offsets_list)
+
+        # ── 1. Construccion + Busqueda local inicial (SIN aceptar peores) ──
+        s = build_meta_solution(jobs, m, alpha, block_size)
+        s_val = evaluate_sequence_precise(s, jobs, m, offsets_list)
+        s, f_s = first_improvement_local_search(
+            s, jobs, m, offsets_list, start_time,
+            current_value=s_val,
+            accept_worse=False,          # <-- determinista
         )
-        if value < best_value:
-            best_value    = value
-            best_sequence = sequence
+
+        # Actualizar mejor solucion global
+        if f_s < best_value:
+            best_value = f_s
+            best_sequence = s[:]
+
+        # Base del ELS para esta solucion de inicio
+        current_s = s[:]
+        current_f = f_s
+
+        # ── 2. ELS con busqueda local probabilistica ──
+        for it in range(N_ITER):
+            if time.time() - start_time >= TIME_LIMIT_TOTAL:
+                break
+
+            best_f_candidate = float("inf")
+            best_candidate = None
+
+            for c in range(N_CANDIDATES):
+                if time.time() - start_time >= TIME_LIMIT_TOTAL:
+                    break
+
+                # Perturbacion desde la solucion base del ELS
+                s_pert, f_pert = perturbation(current_s, jobs, m, offsets_list)
+
+                s_new, f_new = first_improvement_local_search(
+                    s_pert, jobs, m, offsets_list, start_time,
+                    current_value=f_pert,
+                    accept_worse=True,           # <-- probabilistico
+                    prob_accept_worse=PROB_ACCEPT_WORSE,
+                )
+
+                if f_new < best_f_candidate:
+                    best_f_candidate = f_new
+                    best_candidate = s_new[:]
+
+            # Actualizar mejor solucion global
+            if best_f_candidate < best_value:
+                best_value = best_f_candidate
+                best_sequence = best_candidate[:]
+
+            # Actualizar base del ELS solo si hay mejora (criterio conservador)
+            if best_f_candidate < current_f:
+                current_s = best_candidate[:]
+                current_f = best_f_candidate
 
     return best_sequence, best_value
 
@@ -365,7 +495,7 @@ def main():
 
         offsets_list = precompute_all_offsets(jobs)
 
-        best_sequence, best_value = grasp(jobs, m, offsets_list, t0)
+        best_sequence, best_value = meta(jobs, m, offsets_list, t0)
 
         elapsed_ms = round((time.time() - t0) * 1000)
 
