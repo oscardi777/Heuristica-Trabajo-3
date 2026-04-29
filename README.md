@@ -1,5 +1,6 @@
 ### Heuristica Trabajo 3
 
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 Ideas:
 
