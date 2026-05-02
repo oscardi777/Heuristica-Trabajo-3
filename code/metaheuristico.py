@@ -8,13 +8,13 @@ import pandas as pd
 # Archivos y Parámetros
 # ─────────────────────────────────────────────
 INSTANCES_DIR = "NWJSSP Instances"
-OUTPUT_FILE = "resultados\\Exp_alpha0.1_NWJSSP_OADG_NEH(MS+ELS+SA).xlsx"
+OUTPUT_FILE = "resultados\\Exp_alpha0.1_NPER10_NWJSSP_OADG_NEH(MS+ELS+SA).xlsx"
 
 ALPHA = 0.20
 N_SOL = 3
 N_ITER_ELS = 10
 N_CANDIDATES = 5
-N_PERTURBACIONES = 3
+N_PERTURBACIONES = 10
 TIME_LIMIT_TOTAL = 3600
 TIME_LIMIT_PER_BLOCK = 0.01
 
@@ -27,7 +27,7 @@ L = 20              # Iteraciones por nivel de temperatura
 random.seed(42)
 
 INSTANCES = [
-    #"ft06.txt",           "ft06r.txt",
+    "ft06.txt",           "ft06r.txt",
     "ft10.txt",           "ft10r.txt",
     "ft20.txt",           "ft20r.txt",
     #"tai_j10_m10_1.txt",    "tai_j10_m10_1r.txt",
