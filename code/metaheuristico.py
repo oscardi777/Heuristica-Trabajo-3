@@ -8,13 +8,13 @@ import pandas as pd
 # Archivos y Parámetros
 # ─────────────────────────────────────────────
 INSTANCES_DIR = "NWJSSP Instances"
-OUTPUT_FILE = "resultados\\Exp_alpha0.1_NPER10_NWJSSP_OADG_NEH(MS+ELS+SA).xlsx"
+OUTPUT_FILE = "resultados\\NWJSSP_OADG_NEH(MS+ELS+SA).xlsx"
 
 ALPHA = 0.20
 N_SOL = 3
 N_ITER_ELS = 10
 N_CANDIDATES = 5
-N_PERTURBACIONES = 10
+N_PERTURBACIONES = 3
 TIME_LIMIT_TOTAL = 3600
 TIME_LIMIT_PER_BLOCK = 0.01
 
@@ -30,10 +30,10 @@ INSTANCES = [
     "ft06.txt",           "ft06r.txt",
     "ft10.txt",           "ft10r.txt",
     "ft20.txt",           "ft20r.txt",
-    #"tai_j10_m10_1.txt",    "tai_j10_m10_1r.txt",
-    #"tai_j100_m10_1.txt",   "tai_j100_m10_1r.txt",
-    #"tai_j100_m100_1.txt",  "tai_j100_m100_1r.txt",
-    #"tai_j1000_m10_1.txt",  "tai_j1000_m10_1r.txt",
+    "tai_j10_m10_1.txt",    "tai_j10_m10_1r.txt",
+    "tai_j100_m10_1.txt",   "tai_j100_m10_1r.txt",
+    "tai_j100_m100_1.txt",  "tai_j100_m100_1r.txt",
+    "tai_j1000_m10_1.txt",  "tai_j1000_m10_1r.txt",
 ]
 
 # ─────────────────────────────────────────────
@@ -202,8 +202,6 @@ def insertion_backward_neighbors(sequence: list):
             neighbor.insert(j, job)
             yield neighbor
 
-NEIGHBORHOOD_GENERATOR = insertion_backward_neighbors
-
 # ─────────────────────────────────────────────
 # Recocido Simulado como Búsqueda Local
 # ─────────────────────────────────────────────
@@ -223,7 +221,7 @@ def simulated_annealing_local_search(sequence, jobs, m, offsets_list, start_time
                 break
                 
             # Generar vecino
-            for neighbor in NEIGHBORHOOD_GENERATOR(s):
+            for neighbor in insertion_backward_neighbors(s):
                 if time.time() - start_time >= TIME_LIMIT_TOTAL:
                     break
                 f_neighbor = evaluate_sequence_precise(neighbor, jobs, m, offsets_list)

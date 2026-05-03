@@ -18,7 +18,6 @@ OUTPUT_FILE_VND   = "resultados\\NWJSSP_OADG_NEH(VND).xlsx"
 # ─────────────────────────────────────────────
 TIME_LIMIT_PER_BLOCK = 0.01
 TIME_LIMIT_LS = 3600
-MIXED_R = 0.2 # Porcentaje del vecindario a visitar para el segundo criterio
 SEED = random.seed(42)
 
 INSTANCES = [
